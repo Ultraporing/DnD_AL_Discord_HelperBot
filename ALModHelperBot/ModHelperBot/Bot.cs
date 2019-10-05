@@ -33,14 +33,12 @@ using DSharpPlus.Entities;
 using DSharpPlus.EventArgs;
 using Newtonsoft.Json;
 using System.Net;
-using System.Text.RegularExpressions;
 
-namespace Discord_AL_RoleBot
+namespace ALModHelperBot.ModHelperBot
 {
-    public class Program
+    public class Bot
     {
         public DiscordClient Client { get; set; }
-        public DiscordGuild discordGuild { get; set; }
         public ObservableCollection<DiscordMember> Members { get; private set; }
 
         private string Roll20Game { get; set; }
@@ -53,24 +51,15 @@ namespace Discord_AL_RoleBot
         private string[] WhitelistRoleCommandUseName { get; set; }
         private Cache Cache { get; set; }
 
-        public static void Main(string[] args)
-        {
-            // since we cannot make the entry method asynchronous,
-            // let's pass the execution to asynchronous code
-            var prog = new Program();
-            prog.RunBotAsync().GetAwaiter().GetResult();
-        }
+        //private Dictionary<ulong, Task<SnowflakeObject>> CurrentUsersWaitingForCmdCompletion = new Dictionary<ulong, Task<SnowflakeObject>>();
 
         public async Task RunBotAsync()
         {
-            // first, let's load our configuration file
             var json = "";
             using (var fs = File.OpenRead("config.json"))
             using (var sr = new StreamReader(fs, new UTF8Encoding(false)))
                 json = await sr.ReadToEndAsync();
 
-            // next, let's load the values from that file
-            // to our client's configuration
             var cfgjson = JsonConvert.DeserializeObject<ConfigJson>(json);
             var cfg = new DiscordConfiguration
             {
@@ -88,39 +77,15 @@ namespace Discord_AL_RoleBot
             AdventurerRoleName = cfgjson.AdventurerRoleName;
             WhitelistRoleCommandUseName = cfgjson.WhitelistRoleNames;
 
-            // then we want to instantiate our client
             this.Client = new DiscordClient(cfg);
 
-            // If you are on Windows 7 and using .NETFX, install 
-            // DSharpPlus.WebSocket.WebSocket4Net from NuGet,
-            // add appropriate usings, and uncomment the following
-            // line
-            //this.Client.SetWebSocketClient<WebSocket4NetClient>();
-
-            // If you are on Windows 7 and using .NET Core, install 
-            // DSharpPlus.WebSocket.WebSocket4NetCore from NuGet,
-            // add appropriate usings, and uncomment the following
-            // line
-            //this.Client.SetWebSocketClient<WebSocket4NetCoreClient>();
-
-            // If you are using Mono, install 
-            // DSharpPlus.WebSocket.WebSocketSharp from NuGet,
-            // add appropriate usings, and uncomment the following
-            // line
-            //this.Client.SetWebSocketClient<WebSocketSharpClient>();
-
-            // if using any alternate socket client implementations, 
-            // remember to add the following to the top of this file:
-            //using DSharpPlus.Net.WebSocket;
-
-            // next, let's hook some events, so we know
-            // what's going on
             this.Client.Ready += this.Client_Ready;
             this.Client.GuildAvailable += this.Client_GuildAvailable;
             this.Client.ClientErrored += this.Client_ClientError;
-            this.Client.MessageCreated += this.Client_MessageCreated;
-
+            this.Client.MessageCreated += this.Client_MessageCreatedAsync;
+            
             Cache = new Cache() { LastCacheUpdate = DateTimeOffset.MinValue, Players = new List<NonAdventurer>(), Roll20Users = new List<Roll20User>(), CurrentlyUpdating = false };
+
 
             // finally, let's connect and log in
             await this.Client.ConnectAsync();
@@ -131,30 +96,24 @@ namespace Discord_AL_RoleBot
 
         private Task Client_Ready(ReadyEventArgs e)
         {
-            // let's log the fact that this event occured
             e.Client.DebugLogger.LogMessage(LogLevel.Info, "ExampleBot", "Client is ready to process events.", DateTime.Now);
-
-            // since this method is not async, let's return
-            // a completed task, so that no additional work
-            // is done
 
             return Task.CompletedTask;
         }
 
-        private Task Client_MessageCreated(MessageCreateEventArgs e)
+        private async Task<Task> AsyncMessageEvent(MessageCreateEventArgs e)
         {
             Task<DiscordMember> cmdMember = Guild.GetMemberAsync(e.Author.Id);
             cmdMember.Wait();
 
             if (cmdMember.Result == null)
                 return Task.CompletedTask;
-            
+
             if (!cmdMember.Result.Roles.Select(x => x).Intersect(WhitelistRoleCommandUse).Any())
                 return Task.CompletedTask;
 
             if (e.Channel.IsPrivate && e.Message.Content.StartsWith(CommandPrefix))
-            {
-                string outS;
+            {                
                 int line = 0;
                 string command = e.Message.Content.Remove(0, CommandPrefix.Length);
                 if (command != "update" && Cache.LastCacheUpdate == DateTimeOffset.MinValue)
@@ -163,58 +122,62 @@ namespace Discord_AL_RoleBot
                     return Task.CompletedTask;
                 }
 
+                string outS = $"```css\n!{command}:\n```";
                 switch (command)
                 {
                     case "update":
                         if (Cache.CurrentlyUpdating)
                         {
-                            e.Channel.SendMessageAsync("Listen werden bereits geupdated, bitte warten...");
+                            outS += "Listen werden bereits geupdated, bitte warten...";
+                            await e.Channel.SendMessageAsync(outS);
                             while (Cache.CurrentlyUpdating) { }
-                            e.Channel.SendMessageAsync("Listen update abgeschlossen.");
+                            await e.Channel.SendMessageAsync("Listen update abgeschlossen.");
                             return Task.CompletedTask;
                         }
 
-                        e.Channel.SendMessageAsync("Update der Listen aller Spieler wird begonnen, bitte warten...").Wait();
-                        UpdatePlayers(e.Channel);
-                        
+                        outS += "Update der Listen aller Spieler wird begonnen, bitte warten...";
+                        await e.Channel.SendMessageAsync(outS);
+
+                        await UpdatePlayers(e.Author, e.Channel);
+
                         return Task.CompletedTask;
 
                     case "listNonAdv":
-                        outS = "Liste aller nicht abenteurer:\n";
+                        outS += "Liste aller User ohne Abenteurer-Rolle:\n";
                         foreach (NonAdventurer p in Cache.Players)
                             outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
-                        e.Channel.SendMessageAsync(outS);
+                        await e.Channel.SendMessageAsync(outS);
                         return Task.CompletedTask;
 
                     case "listR20":
-                        outS = "Liste aller Roll20 Mitglieder:\n```";
+                        outS += "Liste aller Roll20 Mitglieder:\n```";
                         foreach (Roll20User p in Cache.Roll20Users)
                         {
                             outS += $"Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC\n---\n";
                             line++;
 
-                            if (line > 10)
+                            if (outS.Length >= 800)
                             {
                                 outS += "```";
-                                e.Channel.SendMessageAsync(outS);
+                                await e.Channel.SendMessageAsync(outS);
                                 line = 0;
                                 outS = "```";
                             }
                         }
-                        if (line <= 10)
+                        if (line > 0)
                         {
                             outS += "```";
-                            e.Channel.SendMessageAsync(outS);
+                            await e.Channel.SendMessageAsync(outS);
                         }
-
                         return Task.CompletedTask;
 
                     case "status":
-                        e.Channel.SendMessageAsync($"Letztes Cache Update war am {Cache.LastCacheUpdate.ToString()}");
+                        outS += $"Letztes Cache Update war am {Cache.LastCacheUpdate.ToString()}";
+                        await e.Channel.SendMessageAsync(outS);
                         return Task.CompletedTask;
 
                     case "help":
-                        e.Channel.SendMessageAsync("Das sind die Befehle die du nutzen kannst:\n------------------\n" +
+                        outS += "Das sind die Befehle die du nutzen kannst:\n------------------\n" +
                             "!help: Zeigt diese Nachricht an.\n" +
                             "!status: Zeigt wann die Listen als letztes geupdated wurden.\n" +
                             "!update: Updatet die interne Nicht Abenteurer Liste und Roll20 Liste.\n" +
@@ -222,7 +185,8 @@ namespace Discord_AL_RoleBot
                             "!listR20: Zeigt die komplette Roll20 Spielerliste. VORSICHT SPAM!\n" +
                             "!find <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler mit EXAKT diesem Namen.\n" +
                             "!findp <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler die diesem Namen beinhalten.\n" +
-                            "\n").Wait();
+                            "\n";
+                        await e.Channel.SendMessageAsync(outS);
                         return Task.CompletedTask;
                 }
 
@@ -230,37 +194,37 @@ namespace Discord_AL_RoleBot
                 {
                     string name = command.Remove(0, 5);
                     line = 0;
-                    outS = "Nicht abenteurer mit diesem Namen:\n";                 
+                    outS += "User ohne Abenteurer-Rolle mit diesem Namen:\n";
                     foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
                     {
                         outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
                         line++;
 
-                        if (line > 10)
+                        if (outS.Length > 800)
                         {
-                            e.Channel.SendMessageAsync(outS);
+                            await e.Channel.SendMessageAsync(outS);
                             line = 0;
                             outS = "";
                         }
                     }
-                    
+
                     outS += "Roll20 User mit diesem Namen:\n";
                     foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
                     {
                         outS += $"```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
                         line++;
 
-                        if (line > 10)
+                        if (outS.Length > 800)
                         {
-                            e.Channel.SendMessageAsync(outS);
+                            await e.Channel.SendMessageAsync(outS);
                             line = 0;
                             outS = "";
                         }
                     }
 
-                    if (outS.Length > 0)
+                    if (line > 0)
                     {
-                        e.Channel.SendMessageAsync(outS);
+                        await e.Channel.SendMessageAsync(outS);
                     }
 
                     return Task.CompletedTask;
@@ -270,50 +234,55 @@ namespace Discord_AL_RoleBot
                 {
                     string name = command.Remove(0, 6);
                     line = 0;
-                    outS = "Nicht abenteurer mit ähnlichen Namen:\n";
+                    outS += "User ohne Abenteurer-Rolle mit ähnlichem Namen:\n";
                     foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
                     {
                         outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
                         line++;
 
-                        if (line > 10)
+                        if (outS.Length > 800)
                         {
-                            e.Channel.SendMessageAsync(outS);
+                            await e.Channel.SendMessageAsync(outS);
                             line = 0;
                             outS = "";
                         }
                     }
-                        
+
                     outS += "Roll20 User mit ähnlichen Namen:\n";
                     foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
                     {
                         outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
                         line++;
 
-                        if (line > 10)
+                        if (outS.Length > 800)
                         {
-                            e.Channel.SendMessageAsync(outS);
+                            await e.Channel.SendMessageAsync(outS);
                             line = 0;
                             outS = "";
                         }
                     }
-                        
 
-                    if (outS.Length > 0)
+
+                    if (line > 0)
                     {
-                        e.Channel.SendMessageAsync(outS);
+                        await e.Channel.SendMessageAsync(outS);
                     }
 
                     return Task.CompletedTask;
                 }
             }
 
-            e.Channel.SendMessageAsync("Unbekannter Befehl, bitte nutze !help um eine Liste von Befehlen zu erhalten.");
+            await e.Channel.SendMessageAsync("Unbekannter Befehl, bitte nutze !help um eine Liste von Befehlen zu erhalten.");
 
             return Task.CompletedTask;
         }
 
-        private async Task UpdatePlayers(DiscordChannel channel)
+        private async Task<Task> Client_MessageCreatedAsync(MessageCreateEventArgs e)
+        {
+            return await AsyncMessageEvent(e);
+        }
+
+        private async Task UpdatePlayers(DiscordUser cmdCaller, DiscordChannel channel)
         {
             Cache.CurrentlyUpdating = true;
             IReadOnlyList<DiscordMember> discordMembers = await Guild.GetAllMembersAsync();
@@ -325,7 +294,7 @@ namespace Discord_AL_RoleBot
                 if (!Cache.Roll20Users.Exists(x => x.UID == r20.UID))
                 {
                     Cache.Roll20Users.Add(r20);
-                }                
+                }
             }
 
             foreach (Roll20User r20 in Cache.Roll20Users)
@@ -337,7 +306,7 @@ namespace Discord_AL_RoleBot
             }
 
             Cache.Players = new List<NonAdventurer>();
-            
+
             foreach (DiscordMember member in discordMembers.Where(p => !p.Roles.Contains(AdventurerRole)))
             {
                 Cache.Players.Add(new NonAdventurer() { DisplayName = member.DisplayName, LastSeen = DateTimeOffset.Now, IsInRoll20 = (Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower() == member.DisplayName.Trim().ToLower()).ToList().Count > 0) });
@@ -371,7 +340,7 @@ namespace Discord_AL_RoleBot
                 html = html.Replace("\t", String.Empty);
                 html = html.Replace("\r", String.Empty);
 
-                
+
 
                 while (true)
                 {
@@ -383,20 +352,20 @@ namespace Discord_AL_RoleBot
                         int uidEnd = html.IndexOf("'>");
                         string uid = html.Substring(0, uidEnd);
                         html = html.Remove(0, uidEnd + 2);
-                        int nameBegin = html.IndexOf(">", html.IndexOf("<img class="))+1;
+                        int nameBegin = html.IndexOf(">", html.IndexOf("<img class=")) + 1;
                         int nameEnd = html.IndexOf("<", nameBegin);
-                        string name = html.Substring(nameBegin, nameEnd-nameBegin);
-                        html = html.Remove(0, nameEnd+1);
+                        string name = html.Substring(nameBegin, nameEnd - nameBegin);
+                        html = html.Remove(0, nameEnd + 1);
 
 
-                        nameList.Add(new Roll20User() {DisplayName = name, FirstSeen = DateTimeOffset.Now, UID = uid });
+                        nameList.Add(new Roll20User() { DisplayName = name, FirstSeen = DateTimeOffset.Now, UID = uid });
                     }
                     else
                     {
                         break;
                     }
                 }
-                
+
             }
             catch (ArgumentNullException)
             {
@@ -416,74 +385,20 @@ namespace Discord_AL_RoleBot
                 AdventurerRole = Guild.Roles.First(r => r.Name == AdventurerRoleName);
                 WhitelistRoleCommandUse = Guild.Roles.Where(r => WhitelistRoleCommandUseName.Contains(r.Name)).ToArray();
 
-                UpdatePlayers(null).Wait();
+                e.Client.DebugLogger.LogMessage(LogLevel.Info, "ALModHelperBot", $"Guild Member: {e.Guild.Name} and allows commands", DateTime.Now);
+                UpdatePlayers(null, null).Wait();
+                e.Client.DebugLogger.LogMessage(LogLevel.Info, "ALModHelperBot", $"Bot ready and accepts commands", DateTime.Now);
             }
-           
+            else
+                e.Client.DebugLogger.LogMessage(LogLevel.Info, "ALModHelperBot", $"Guild Member: {e.Guild.Name}", DateTime.Now);
 
-            // let's log the name of the guild that was just
-            // sent to our client
-            e.Client.DebugLogger.LogMessage(LogLevel.Info, "ExampleBot", $"Guild available: {e.Guild.Name}", DateTime.Now);
-            discordGuild = e.Guild;
-            // since this method is not async, let's return
-            // a completed task, so that no additional work
-            // is done
             return Task.CompletedTask;
         }
 
         private Task Client_ClientError(ClientErrorEventArgs e)
         {
-            // let's log the details of the error that just 
-            // occured in our client
-            e.Client.DebugLogger.LogMessage(LogLevel.Error, "ExampleBot", $"Exception occured: {e.Exception.GetType()}: {e.Exception.Message}", DateTime.Now);
-
-            // since this method is not async, let's return
-            // a completed task, so that no additional work
-            // is done
+            e.Client.DebugLogger.LogMessage(LogLevel.Error, "ALModHelperBot", $"Exception occured: {e.Exception.GetType()}: {e.Exception.Message}", DateTime.Now);
             return Task.CompletedTask;
         }
-    }
-
-    public struct NonAdventurer
-    {
-        public string DisplayName;
-        public DateTimeOffset LastSeen;
-        public bool IsInRoll20;
-    }
-
-    public struct Roll20User
-    {
-        public string DisplayName;
-        public DateTimeOffset FirstSeen;
-        public string UID;
-    }
-
-    public class Cache
-    {
-        public List<NonAdventurer> Players { get; set; }
-        public List<Roll20User> Roll20Users { get; set; }
-        public DateTimeOffset LastCacheUpdate { get; set; }
-        public bool CurrentlyUpdating { get; set; }
-    }
-
-    // this structure will hold data from config.json
-    public struct ConfigJson
-    {
-        [JsonProperty("token")]
-        public string Token { get; private set; }
-
-        [JsonProperty("prefix")]
-        public string CommandPrefix { get; private set; }
-
-        [JsonProperty("roll20Game")]
-        public string Roll20Game { get; private set; }
-
-        [JsonProperty("discordServer")]
-        public ulong DiscordServer { get; private set; }
-
-        [JsonProperty("adventurerRoleName")]
-        public string AdventurerRoleName { get; private set; }
-
-        [JsonProperty("whitelistRoleNames")]
-        public string[] WhitelistRoleNames { get; private set; }
     }
 }
