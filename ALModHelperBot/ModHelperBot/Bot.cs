@@ -103,176 +103,179 @@ namespace ALModHelperBot.ModHelperBot
 
         private async Task<Task> AsyncMessageEvent(MessageCreateEventArgs e)
         {
-            Task<DiscordMember> cmdMember = Guild.GetMemberAsync(e.Author.Id);
-            cmdMember.Wait();
+            if (e.Channel.IsPrivate)
+            {
+                Task<DiscordMember> cmdMember = Guild.GetMemberAsync(e.Author.Id);
+                cmdMember.Wait();
 
-            if (cmdMember.Result == null)
-                return Task.CompletedTask;
-
-            if (!cmdMember.Result.Roles.Select(x => x).Intersect(WhitelistRoleCommandUse).Any())
-                return Task.CompletedTask;
-
-            if (e.Channel.IsPrivate && e.Message.Content.StartsWith(CommandPrefix))
-            {                
-                int line = 0;
-                string command = e.Message.Content.Remove(0, CommandPrefix.Length);
-                if (command != "update" && Cache.LastCacheUpdate == DateTimeOffset.MinValue)
-                {
-                    e.Channel.SendMessageAsync("Bitte führe zuerst !update aus damit die Listen der Spieler erstell werden.").Wait();
+                if (cmdMember.Result == null)
                     return Task.CompletedTask;
-                }
 
-                string outS = $"```css\n!{command}:\n```";
-                switch (command)
+                if (!cmdMember.Result.Roles.Select(x => x).Intersect(WhitelistRoleCommandUse).Any())
+                    return Task.CompletedTask;
+
+                if (e.Channel.IsPrivate && e.Message.Content.StartsWith(CommandPrefix))
                 {
-                    case "update":
-                        if (Cache.CurrentlyUpdating)
-                        {
-                            outS += "Listen werden bereits geupdated, bitte warten...";
+                    int line = 0;
+                    string command = e.Message.Content.Remove(0, CommandPrefix.Length);
+                    if (command != "update" && Cache.LastCacheUpdate == DateTimeOffset.MinValue)
+                    {
+                        e.Channel.SendMessageAsync("Bitte führe zuerst !update aus damit die Listen der Spieler erstell werden.").Wait();
+                        return Task.CompletedTask;
+                    }
+
+                    string outS = $"```css\n!{command}:\n```";
+                    switch (command)
+                    {
+                        case "update":
+                            if (Cache.CurrentlyUpdating)
+                            {
+                                outS += "Listen werden bereits geupdated, bitte warten...";
+                                await e.Channel.SendMessageAsync(outS);
+                                while (Cache.CurrentlyUpdating) { }
+                                await e.Channel.SendMessageAsync("Listen update abgeschlossen.");
+                                return Task.CompletedTask;
+                            }
+
+                            outS += "Update der Listen aller Spieler wird begonnen, bitte warten...";
                             await e.Channel.SendMessageAsync(outS);
-                            while (Cache.CurrentlyUpdating) { }
-                            await e.Channel.SendMessageAsync("Listen update abgeschlossen.");
+
+                            await UpdatePlayers(e.Author, e.Channel);
+
                             return Task.CompletedTask;
-                        }
 
-                        outS += "Update der Listen aller Spieler wird begonnen, bitte warten...";
-                        await e.Channel.SendMessageAsync(outS);
+                        case "listNonAdv":
+                            outS += "Liste aller User ohne Abenteurer-Rolle:\n";
+                            foreach (NonAdventurer p in Cache.Players)
+                                outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
+                            await e.Channel.SendMessageAsync(outS);
+                            return Task.CompletedTask;
 
-                        await UpdatePlayers(e.Author, e.Channel);
+                        case "listR20":
+                            outS += "Liste aller Roll20 Mitglieder:\n```";
+                            foreach (Roll20User p in Cache.Roll20Users)
+                            {
+                                outS += $"Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC\n---\n";
+                                line++;
 
-                        return Task.CompletedTask;
-
-                    case "listNonAdv":
-                        outS += "Liste aller User ohne Abenteurer-Rolle:\n";
-                        foreach (NonAdventurer p in Cache.Players)
-                            outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
-                        await e.Channel.SendMessageAsync(outS);
-                        return Task.CompletedTask;
-
-                    case "listR20":
-                        outS += "Liste aller Roll20 Mitglieder:\n```";
-                        foreach (Roll20User p in Cache.Roll20Users)
-                        {
-                            outS += $"Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC\n---\n";
-                            line++;
-
-                            if (outS.Length >= 800)
+                                if (outS.Length >= 800)
+                                {
+                                    outS += "```";
+                                    await e.Channel.SendMessageAsync(outS);
+                                    line = 0;
+                                    outS = "```";
+                                }
+                            }
+                            if (line > 0)
                             {
                                 outS += "```";
                                 await e.Channel.SendMessageAsync(outS);
+                            }
+                            return Task.CompletedTask;
+
+                        case "status":
+                            outS += $"Letztes Cache Update war am {Cache.LastCacheUpdate.ToString()}";
+                            await e.Channel.SendMessageAsync(outS);
+                            return Task.CompletedTask;
+
+                        case "help":
+                            outS += "Das sind die Befehle die du nutzen kannst:\n------------------\n" +
+                                "!help: Zeigt diese Nachricht an.\n" +
+                                "!status: Zeigt wann die Listen als letztes geupdated wurden.\n" +
+                                "!update: Updatet die interne Nicht Abenteurer Liste und Roll20 Liste.\n" +
+                                "!listNonAdv: Zeigt die komplette Nicht Abenteurer Liste.\n" +
+                                "!listR20: Zeigt die komplette Roll20 Spielerliste. VORSICHT SPAM!\n" +
+                                "!find <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler mit EXAKT diesem Namen.\n" +
+                                "!findp <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler die diesem Namen beinhalten.\n" +
+                                "\n";
+                            await e.Channel.SendMessageAsync(outS);
+                            return Task.CompletedTask;
+                    }
+
+                    if (command.StartsWith("find "))
+                    {
+                        string name = command.Remove(0, 5);
+                        line = 0;
+                        outS += "User ohne Abenteurer-Rolle mit diesem Namen:\n";
+                        foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
+                        {
+                            outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
+                            line++;
+
+                            if (outS.Length > 800)
+                            {
+                                await e.Channel.SendMessageAsync(outS);
                                 line = 0;
-                                outS = "```";
+                                outS = "";
                             }
                         }
+
+                        outS += "Roll20 User mit diesem Namen:\n";
+                        foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
+                        {
+                            outS += $"```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
+                            line++;
+
+                            if (outS.Length > 800)
+                            {
+                                await e.Channel.SendMessageAsync(outS);
+                                line = 0;
+                                outS = "";
+                            }
+                        }
+
                         if (line > 0)
                         {
-                            outS += "```";
                             await e.Channel.SendMessageAsync(outS);
                         }
-                        return Task.CompletedTask;
 
-                    case "status":
-                        outS += $"Letztes Cache Update war am {Cache.LastCacheUpdate.ToString()}";
-                        await e.Channel.SendMessageAsync(outS);
                         return Task.CompletedTask;
+                    }
 
-                    case "help":
-                        outS += "Das sind die Befehle die du nutzen kannst:\n------------------\n" +
-                            "!help: Zeigt diese Nachricht an.\n" +
-                            "!status: Zeigt wann die Listen als letztes geupdated wurden.\n" +
-                            "!update: Updatet die interne Nicht Abenteurer Liste und Roll20 Liste.\n" +
-                            "!listNonAdv: Zeigt die komplette Nicht Abenteurer Liste.\n" +
-                            "!listR20: Zeigt die komplette Roll20 Spielerliste. VORSICHT SPAM!\n" +
-                            "!find <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler mit EXAKT diesem Namen.\n" +
-                            "!findp <name>: Zeigt alle Nicht Adventurer und Roll20 Spieler die diesem Namen beinhalten.\n" +
-                            "\n";
-                        await e.Channel.SendMessageAsync(outS);
+                    if (command.StartsWith("findp "))
+                    {
+                        string name = command.Remove(0, 6);
+                        line = 0;
+                        outS += "User ohne Abenteurer-Rolle mit ähnlichem Namen:\n";
+                        foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
+                        {
+                            outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
+                            line++;
+
+                            if (outS.Length > 800)
+                            {
+                                await e.Channel.SendMessageAsync(outS);
+                                line = 0;
+                                outS = "";
+                            }
+                        }
+
+                        outS += "Roll20 User mit ähnlichen Namen:\n";
+                        foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
+                        {
+                            outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
+                            line++;
+
+                            if (outS.Length > 800)
+                            {
+                                await e.Channel.SendMessageAsync(outS);
+                                line = 0;
+                                outS = "";
+                            }
+                        }
+
+
+                        if (line > 0)
+                        {
+                            await e.Channel.SendMessageAsync(outS);
+                        }
+
                         return Task.CompletedTask;
+                    }
                 }
 
-                if (command.StartsWith("find "))
-                {
-                    string name = command.Remove(0, 5);
-                    line = 0;
-                    outS += "User ohne Abenteurer-Rolle mit diesem Namen:\n";
-                    foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
-                    {
-                        outS += $"Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
-                        line++;
-
-                        if (outS.Length > 800)
-                        {
-                            await e.Channel.SendMessageAsync(outS);
-                            line = 0;
-                            outS = "";
-                        }
-                    }
-
-                    outS += "Roll20 User mit diesem Namen:\n";
-                    foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower() == name.Trim().ToLower()))
-                    {
-                        outS += $"```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
-                        line++;
-
-                        if (outS.Length > 800)
-                        {
-                            await e.Channel.SendMessageAsync(outS);
-                            line = 0;
-                            outS = "";
-                        }
-                    }
-
-                    if (line > 0)
-                    {
-                        await e.Channel.SendMessageAsync(outS);
-                    }
-
-                    return Task.CompletedTask;
-                }
-
-                if (command.StartsWith("findp "))
-                {
-                    string name = command.Remove(0, 6);
-                    line = 0;
-                    outS += "User ohne Abenteurer-Rolle mit ähnlichem Namen:\n";
-                    foreach (NonAdventurer p in Cache.Players.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
-                    {
-                        outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}Player: {p.DisplayName}\nLast Checked: {p.LastSeen.ToString()} UTC\nIn Roll20: {(p.IsInRoll20 ? ":white_check_mark:" : ":x:")}\n---\n";
-                        line++;
-
-                        if (outS.Length > 800)
-                        {
-                            await e.Channel.SendMessageAsync(outS);
-                            line = 0;
-                            outS = "";
-                        }
-                    }
-
-                    outS += "Roll20 User mit ähnlichen Namen:\n";
-                    foreach (Roll20User p in Cache.Roll20Users.Where(p => p.DisplayName.Trim().ToLower().Contains(name.Trim().ToLower())))
-                    {
-                        outS += $"{(p.DisplayName.Trim().ToLower() == name.Trim().ToLower() ? ":star:" : "")}```Player: {p.DisplayName}\nFirst Seen: {p.FirstSeen.ToString()} UTC```\n";
-                        line++;
-
-                        if (outS.Length > 800)
-                        {
-                            await e.Channel.SendMessageAsync(outS);
-                            line = 0;
-                            outS = "";
-                        }
-                    }
-
-
-                    if (line > 0)
-                    {
-                        await e.Channel.SendMessageAsync(outS);
-                    }
-
-                    return Task.CompletedTask;
-                }
+                await e.Channel.SendMessageAsync("Unbekannter Befehl, bitte nutze !help um eine Liste von Befehlen zu erhalten.");
             }
-
-            await e.Channel.SendMessageAsync("Unbekannter Befehl, bitte nutze !help um eine Liste von Befehlen zu erhalten.");
 
             return Task.CompletedTask;
         }
